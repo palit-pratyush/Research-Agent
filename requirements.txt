@@ -1,0 +1,10 @@
+streamlit
+arxiv
+langchain-groq
+sentence-transformers
+scikit-learn
+pandas
+numpy
+requests
+python-dotenv
+langchain
