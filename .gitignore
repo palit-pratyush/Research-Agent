@@ -128,9 +128,6 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# Streamlit
-.streamlit/
-
 # IDE
 .vscode/
 .idea/
@@ -169,6 +166,3 @@ data/
 *.json
 *.pkl
 *.pickle
-
-# Streamlit specific
-.streamlit/secrets.toml

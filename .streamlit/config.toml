@@ -1,0 +1,7 @@
+[theme]
+base="dark"
+primaryColor="#c4b5fd"
+backgroundColor="#0f172a"
+secondaryBackgroundColor="#1e293b"
+baseRadius = "3px"
+
