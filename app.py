@@ -417,37 +417,117 @@ class PaperSummarizer:
 
 summarizer = PaperSummarizer()
 
-def fetch_arxiv_papers(query, max_results=10):
-    """Fetch papers from ArXiv API"""
+# def fetch_arxiv_papers(query, max_results=10):
+#     """Fetch papers from ArXiv API"""
+#     try:
+#         client = arxiv.Client(    
+#             page_size=10,
+#             delay_seconds=3.0,
+#             num_retries=3
+#         )
+#         search = arxiv.Search(
+#             query=query,
+#             max_results=max_results,
+#             sort_by=arxiv.SortCriterion.Relevance
+#         )
+        
+#         papers = []
+#         for result in client.results(search):
+#             paper = {
+#                 'id': result.entry_id.split('/')[-1],
+#                 'title': result.title,
+#                 'authors': [author.name for author in result.authors],
+#                 'abstract': result.summary,
+#                 'published': result.published.strftime('%Y-%m-%d'),
+#                 'url': result.entry_id,
+#                 'pdf_url': result.pdf_url
+#             }
+#             papers.append(paper)
+        
+#         return papers
+#     except Exception as e:
+#         logger.error(f"Error fetching papers: {e}")
+#         return []
+
+def fetch_arxiv_papers(query, max_results=10, max_attempts=3):
+    """Fetch papers from ArXiv API with exponential backoff"""
+    for attempt in range(max_attempts):
+        try:
+            client = arxiv.Client(page_size=10, delay_seconds=5.0, num_retries=1)
+            search = arxiv.Search(
+                query=query,
+                max_results=max_results,
+                sort_by=arxiv.SortCriterion.Relevance
+            )
+            papers = []
+            for result in client.results(search):
+                papers.append({
+                    'id': result.entry_id.split('/')[-1],
+                    'title': result.title,
+                    'authors': [a.name for a in result.authors],
+                    'abstract': result.summary,
+                    'published': result.published.strftime('%Y-%m-%d'),
+                    'url': result.entry_id,
+                    'pdf_url': result.pdf_url,
+                    'source': 'arXiv'
+                })
+            return papers
+        except Exception as e:
+            if '429' in str(e) and attempt < max_attempts - 1:
+                wait = (2 ** attempt) * 8  # 8, 16s
+                logger.warning(f"arXiv rate limited, waiting {wait}s (attempt {attempt+1}/{max_attempts})")
+                time.sleep(wait)
+                continue
+            logger.error(f"arXiv fetch failed: {e}")
+            return []
+    return []
+
+
+def fetch_semantic_scholar_papers(query, max_results=10):
+    """Fallback: fetch papers from Semantic Scholar API"""
     try:
-        client = arxiv.Client(    
-            page_size=10,
-            delay_seconds=3.0,
-            num_retries=3
-        )
-        search = arxiv.Search(
-            query=query,
-            max_results=max_results,
-            sort_by=arxiv.SortCriterion.Relevance
-        )
-        
+        url = "https://api.semanticscholar.org/graph/v1/paper/search"
+        params = {
+            "query": query,
+            "limit": max_results,
+            "fields": "title,abstract,authors,year,publicationDate,externalIds,openAccessPdf,url"
+        }
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+
         papers = []
-        for result in client.results(search):
-            paper = {
-                'id': result.entry_id.split('/')[-1],
-                'title': result.title,
-                'authors': [author.name for author in result.authors],
-                'abstract': result.summary,
-                'published': result.published.strftime('%Y-%m-%d'),
-                'url': result.entry_id,
-                'pdf_url': result.pdf_url
-            }
-            papers.append(paper)
-        
+        for item in data.get("data", []):
+            if not item.get("abstract"):
+                continue  # skip papers with no abstract, summarizer needs it
+            arxiv_id = (item.get("externalIds") or {}).get("ArXiv")
+            papers.append({
+                'id': item.get("paperId"),
+                'title': item.get("title", "Untitled"),
+                'authors': [a.get("name", "Unknown") for a in item.get("authors", [])],
+                'abstract': item.get("abstract", ""),
+                'published': item.get("publicationDate") or f"{item.get('year', 'Unknown')}-01-01",
+                'url': item.get("url") or f"https://www.semanticscholar.org/paper/{item.get('paperId')}",
+                'pdf_url': (item.get("openAccessPdf") or {}).get("url") or (
+                    f"https://arxiv.org/pdf/{arxiv_id}" if arxiv_id else item.get("url", "")
+                ),
+                'source': 'Semantic Scholar'
+            })
         return papers
     except Exception as e:
-        logger.error(f"Error fetching papers: {e}")
+        logger.error(f"Semantic Scholar fetch failed: {e}")
         return []
+
+
+def fetch_papers(query, max_results=10):
+    """Fetch papers from arXiv, falling back to Semantic Scholar if arXiv fails"""
+    papers = fetch_arxiv_papers(query, max_results)
+    if papers:
+        return papers
+
+    logger.warning("arXiv returned nothing — falling back to Semantic Scholar")
+    st.info("⚠️ ArXiv is rate-limited right now — showing results from Semantic Scholar instead.")
+    return fetch_semantic_scholar_papers(query, max_results)
 
 def calculate_relevance_scores(query, papers):
     """Calculate relevance scores using cosine similarity"""
@@ -583,7 +663,7 @@ def main():
         
         if search_button and search_query:
             with st.spinner("🔍 Searching ArXiv database..."):
-                papers = fetch_arxiv_papers(search_query, max_results)
+                papers = fetch_papers(search_query, max_results)
                 
                 if papers:
                     st.success(f"✅ Found {len(papers)} papers!")
