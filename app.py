@@ -420,7 +420,11 @@ summarizer = PaperSummarizer()
 def fetch_arxiv_papers(query, max_results=10):
     """Fetch papers from ArXiv API"""
     try:
-        client = arxiv.Client()
+        client = arxiv.Client(    
+            page_size=10,
+            delay_seconds=3.0,
+            num_retries=3
+        )
         search = arxiv.Search(
             query=query,
             max_results=max_results,
