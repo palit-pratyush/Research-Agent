@@ -449,6 +449,87 @@ summarizer = PaperSummarizer()
 #         logger.error(f"Error fetching papers: {e}")
 #         return []
 
+# def fetch_arxiv_papers(query, max_results=10, max_attempts=3):
+#     """Fetch papers from ArXiv API with exponential backoff"""
+#     for attempt in range(max_attempts):
+#         try:
+#             client = arxiv.Client(page_size=10, delay_seconds=5.0, num_retries=1)
+#             search = arxiv.Search(
+#                 query=query,
+#                 max_results=max_results,
+#                 sort_by=arxiv.SortCriterion.Relevance
+#             )
+#             papers = []
+#             for result in client.results(search):
+#                 papers.append({
+#                     'id': result.entry_id.split('/')[-1],
+#                     'title': result.title,
+#                     'authors': [a.name for a in result.authors],
+#                     'abstract': result.summary,
+#                     'published': result.published.strftime('%Y-%m-%d'),
+#                     'url': result.entry_id,
+#                     'pdf_url': result.pdf_url,
+#                     'source': 'arXiv'
+#                 })
+#             return papers
+#         except Exception as e:
+#             if '429' in str(e) and attempt < max_attempts - 1:
+#                 wait = (2 ** attempt) * 8  # 8, 16s
+#                 logger.warning(f"arXiv rate limited, waiting {wait}s (attempt {attempt+1}/{max_attempts})")
+#                 time.sleep(wait)
+#                 continue
+#             logger.error(f"arXiv fetch failed: {e}")
+#             return []
+#     return []
+
+
+# def fetch_semantic_scholar_papers(query, max_results=10):
+#     """Fallback: fetch papers from Semantic Scholar API"""
+#     try:
+#         url = "https://api.semanticscholar.org/graph/v1/paper/search"
+#         params = {
+#             "query": query,
+#             "limit": max_results,
+#             "fields": "title,abstract,authors,year,publicationDate,externalIds,openAccessPdf,url"
+#         }
+#         response = requests.get(url, params=params, timeout=15)
+#         response.raise_for_status()
+#         data = response.json()
+
+#         papers = []
+#         for item in data.get("data", []):
+#             if not item.get("abstract"):
+#                 continue  # skip papers with no abstract, summarizer needs it
+#             arxiv_id = (item.get("externalIds") or {}).get("ArXiv")
+#             papers.append({
+#                 'id': item.get("paperId"),
+#                 'title': item.get("title", "Untitled"),
+#                 'authors': [a.get("name", "Unknown") for a in item.get("authors", [])],
+#                 'abstract': item.get("abstract", ""),
+#                 'published': item.get("publicationDate") or f"{item.get('year', 'Unknown')}-01-01",
+#                 'url': item.get("url") or f"https://www.semanticscholar.org/paper/{item.get('paperId')}",
+#                 'pdf_url': (item.get("openAccessPdf") or {}).get("url") or (
+#                     f"https://arxiv.org/pdf/{arxiv_id}" if arxiv_id else item.get("url", "")
+#                 ),
+#                 'source': 'Semantic Scholar'
+#             })
+#         return papers
+#     except Exception as e:
+#         logger.error(f"Semantic Scholar fetch failed: {e}")
+#         return []
+
+
+# def fetch_papers(query, max_results=10):
+#     """Fetch papers from arXiv, falling back to Semantic Scholar if arXiv fails"""
+#     papers = fetch_arxiv_papers(query, max_results)
+#     if papers:
+#         return papers
+
+#     logger.warning("arXiv returned nothing — falling back to Semantic Scholar")
+#     st.info("⚠️ ArXiv is rate-limited right now — showing results from Semantic Scholar instead.")
+#     return fetch_semantic_scholar_papers(query, max_results)
+
+
 def fetch_arxiv_papers(query, max_results=10, max_attempts=3):
     """Fetch papers from ArXiv API with exponential backoff"""
     for attempt in range(max_attempts):
@@ -473,9 +554,9 @@ def fetch_arxiv_papers(query, max_results=10, max_attempts=3):
                 })
             return papers
         except Exception as e:
-            if '429' in str(e) and attempt < max_attempts - 1:
+            if attempt < max_attempts - 1:
                 wait = (2 ** attempt) * 8  # 8, 16s
-                logger.warning(f"arXiv rate limited, waiting {wait}s (attempt {attempt+1}/{max_attempts})")
+                logger.warning(f"arXiv failed, waiting {wait}s (attempt {attempt+1}/{max_attempts})")
                 time.sleep(wait)
                 continue
             logger.error(f"arXiv fetch failed: {e}")
@@ -483,51 +564,53 @@ def fetch_arxiv_papers(query, max_results=10, max_attempts=3):
     return []
 
 
-def fetch_semantic_scholar_papers(query, max_results=10):
-    """Fallback: fetch papers from Semantic Scholar API"""
+def fetch_openalex_papers(query, max_results=10):
+    """Fallback: fetch papers from OpenAlex API"""
     try:
-        url = "https://api.semanticscholar.org/graph/v1/paper/search"
+        url = "https://api.openalex.org/works"
         params = {
-            "query": query,
-            "limit": max_results,
-            "fields": "title,abstract,authors,year,publicationDate,externalIds,openAccessPdf,url"
+            "search": query,
+            "per-page": max_results,
+            "mailto": "palitpratyush2003@gmail.com"  # replace with a real contact email
         }
         response = requests.get(url, params=params, timeout=15)
         response.raise_for_status()
         data = response.json()
 
         papers = []
-        for item in data.get("data", []):
-            if not item.get("abstract"):
+        for item in data.get("results", []):
+            abstract_idx = item.get("abstract_inverted_index")
+            if not abstract_idx:
                 continue  # skip papers with no abstract, summarizer needs it
-            arxiv_id = (item.get("externalIds") or {}).get("ArXiv")
+            words = sorted(((pos, w) for w, positions in abstract_idx.items() for pos in positions))
+            abstract = " ".join(w for _, w in words)
+
             papers.append({
-                'id': item.get("paperId"),
-                'title': item.get("title", "Untitled"),
-                'authors': [a.get("name", "Unknown") for a in item.get("authors", [])],
-                'abstract': item.get("abstract", ""),
-                'published': item.get("publicationDate") or f"{item.get('year', 'Unknown')}-01-01",
-                'url': item.get("url") or f"https://www.semanticscholar.org/paper/{item.get('paperId')}",
-                'pdf_url': (item.get("openAccessPdf") or {}).get("url") or (
-                    f"https://arxiv.org/pdf/{arxiv_id}" if arxiv_id else item.get("url", "")
-                ),
-                'source': 'Semantic Scholar'
+                'id': item.get("id", "").split("/")[-1],
+                'title': item.get("title") or "Untitled",
+                'authors': [a["author"]["display_name"] for a in item.get("authorships", [])],
+                'abstract': abstract,
+                'published': item.get("publication_date") or "Unknown",
+                'url': item.get("id", ""),
+                'pdf_url': (item.get("open_access") or {}).get("oa_url") or item.get("id", ""),
+                'source': 'OpenAlex'
             })
         return papers
     except Exception as e:
-        logger.error(f"Semantic Scholar fetch failed: {e}")
+        logger.error(f"OpenAlex fetch failed: {e}")
         return []
 
 
 def fetch_papers(query, max_results=10):
-    """Fetch papers from arXiv, falling back to Semantic Scholar if arXiv fails"""
+    """Fetch papers from arXiv, falling back to OpenAlex if arXiv fails"""
     papers = fetch_arxiv_papers(query, max_results)
     if papers:
         return papers
 
-    logger.warning("arXiv returned nothing — falling back to Semantic Scholar")
-    st.info("⚠️ ArXiv is rate-limited right now — showing results from Semantic Scholar instead.")
-    return fetch_semantic_scholar_papers(query, max_results)
+    logger.warning("arXiv returned nothing — falling back to OpenAlex")
+    st.info("⚠️ ArXiv is unavailable right now — showing results from OpenAlex instead.")
+    return fetch_openalex_papers(query, max_results)
+
 
 def calculate_relevance_scores(query, papers):
     """Calculate relevance scores using cosine similarity"""
